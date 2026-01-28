@@ -203,6 +203,24 @@ VARIANTS:
 # =================================================
 # 8. Retriever Agent (MMR + Multi-Query)
 # =================================================
+def simple_retriever_agent(state: AgentState):
+    """
+    Fast, cheap retrieval for first attempt.
+    """
+
+    query = state["messages"][0].content
+    if isinstance(query, list):
+        query = query[0] if query else ""
+
+    retriever = VECTORSTORE.as_retriever(
+        search_kwargs={"k": 6}
+    )
+
+    docs = retriever.invoke(str(query))
+
+    context = "\n\n".join(d.page_content for d in docs)
+
+    return {"context": context}
 
 def retriever_agent(state: AgentState):
     """
@@ -354,25 +372,31 @@ Reply PASS or FAIL.
 
 workflow = StateGraph(AgentState)
 
+# Nodes
 workflow.add_node("planner", planner_agent)
+workflow.add_node("simple_retrieve", simple_retriever_agent)
 workflow.add_node("rewrite", rewrite_agent)
-workflow.add_node("retrieve", retriever_agent)
+workflow.add_node("retrieve", retriever_agent)      # advanced
 workflow.add_node("rerank", rerank_agent)
 workflow.add_node("answer_agent", answer_agent)
 workflow.add_node("critic", critic_agent)
 
+# ----- Initial cheap path -----
 workflow.add_edge(START, "planner")
-workflow.add_edge("planner", "rewrite")
+workflow.add_edge("planner", "simple_retrieve")
+workflow.add_edge("simple_retrieve", "answer_agent")
+workflow.add_edge("answer_agent", "critic")
+
+# ----- Retry (expensive) path -----
 workflow.add_edge("rewrite", "retrieve")
 workflow.add_edge("retrieve", "rerank")
 workflow.add_edge("rerank", "answer_agent")
-workflow.add_edge("answer_agent", "critic")
 
+# ----- Critic routing -----
 def route_from_critic(state: AgentState) -> Literal["final", "retry"]:
     if state["critic_decision"] == "final":
         return "final"
     return "retry"
-
 
 workflow.add_conditional_edges(
     "critic",
@@ -384,7 +408,6 @@ workflow.add_conditional_edges(
 )
 
 graph = workflow.compile()
-
 
 # =================================================
 # 13. Runner
